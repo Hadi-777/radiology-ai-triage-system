@@ -1,122 +1,176 @@
 -- ─────────────────────────────────────────────────────────
---  Radiology Triage Platform  ·  Database Schema
+--  Radiology Triage Platform · Database Schema
 --  This file runs automatically when the PostgreSQL
 --  container starts for the first time.
 -- ─────────────────────────────────────────────────────────
 
--- Use UUID primary keys everywhere for scalability
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 
--- ── 1. studies ──────────────────────────────────────────
---  One row per uploaded chest X-ray.
---  Created the moment the doctor uploads an image.
+-- ── 1. users ─────────────────────────────────────────────
+-- Doctors and technicians who can access the system.
+
+CREATE TABLE IF NOT EXISTS users (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_name       VARCHAR(128) NOT NULL,
+  email           VARCHAR(128) NOT NULL UNIQUE,
+  password        VARCHAR(255) NOT NULL,
+  phone_number    VARCHAR(32),
+  role            VARCHAR(32) NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE users IS 'System users: doctors and technicians only.';
+COMMENT ON COLUMN users.role IS 'Allowed values: doctor, technician.';
+
+
+-- ── 2. patients ──────────────────────────────────────────
+-- Patients who have X-ray studies.
+
+CREATE TABLE IF NOT EXISTS patient (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_name             VARCHAR(128) NOT NULL,
+  age                   INTEGER,
+  gender                VARCHAR(32),
+  phone_number          VARCHAR(32),
+  medical_record_number VARCHAR(64),
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE patients IS 'Patient information related to uploaded X-ray studies.';
+
+
+-- ── 3. studies ───────────────────────────────────────────
+-- One row per uploaded chest X-ray.
 
 CREATE TABLE IF NOT EXISTS studies (
-  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  patient_id      VARCHAR(64) NOT NULL,                -- anonymised patient reference
-  image_path      TEXT        NOT NULL,                -- path on disk (or S3 key later)
-  original_name   VARCHAR(255),                        -- original filename from upload
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  patient_id      VARCHAR(64) NOT NULL,
+  image_path      TEXT NOT NULL,
+  original_name   VARCHAR(255),
   status          VARCHAR(32) NOT NULL DEFAULT 'pending',
-  --   pending → processing → completed → failed
+
+  patientId       UUID REFERENCES patient(id) ON DELETE SET NULL,
+  uploadedById    UUID REFERENCES users(id) ON DELETE SET NULL,
+
   uploaded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE  studies                IS 'One row per uploaded chest X-ray study.';
-COMMENT ON COLUMN studies.status         IS 'Lifecycle: pending → processing → completed → failed';
-COMMENT ON COLUMN studies.patient_id     IS 'Anonymised reference — not a real patient name.';
+COMMENT ON TABLE studies IS 'One row per uploaded chest X-ray study.';
+COMMENT ON COLUMN studies.status IS 'Lifecycle: pending, processing, completed, approved, rejected, failed.';
 
 
--- ── 2. ai_results ───────────────────────────────────────
---  Stores everything the FastAPI service returns for a study.
---  One-to-one with studies (each study has at most one AI result).
+-- ── 4. ai_results ────────────────────────────────────────
+-- AI simulation result for each study.
 
 CREATE TABLE IF NOT EXISTS ai_results (
-  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  study_id        UUID        NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  study_id        UUID NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
 
-  -- Classification output
-  label           VARCHAR(32) NOT NULL,          -- "normal" or "abnormal"
-  confidence      NUMERIC(5,4) NOT NULL,         -- 0.0000 – 1.0000
+  label           VARCHAR(32) NOT NULL,
+  confidence      NUMERIC(5,4) NOT NULL,
   priority        VARCHAR(32) NOT NULL,
-  --   High | Medium | Low | Needs Review
-  --   Rules:
-  --     High         → abnormal  AND confidence >= 0.85
-  --     Medium       → abnormal  AND confidence >= 0.65 AND < 0.85
-  --     Low          → normal    AND confidence >= 0.85
-  --     Needs Review → confidence < 0.65
+  message         TEXT,
 
-  -- Explainability
-  heatmap_path    TEXT,                          -- path to Grad-CAM overlay image
-
-  -- AI-generated narrative (non-final, always hedged)
-  findings        TEXT,                          -- e.g. "Possible consolidation in right lower lobe"
-  draft_report    TEXT,                          -- full draft for doctor to review & edit
-
-  -- Metadata
-  model_version   VARCHAR(64) DEFAULT 'resnet50-v1',
-  analyzed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE  ai_results               IS 'AI inference output for each study. One-to-one with studies.';
-COMMENT ON COLUMN ai_results.findings      IS 'Hedged language only — possible, may suggest, suspicious for. Never a definitive diagnosis.';
-COMMENT ON COLUMN ai_results.draft_report  IS 'Starting point for the radiologist, not a final report.';
-COMMENT ON COLUMN ai_results.confidence    IS 'Model softmax confidence between 0 and 1.';
+COMMENT ON TABLE ai_results IS 'Local AI simulation output for each uploaded X-ray.';
+COMMENT ON COLUMN ai_results.priority IS 'High, Medium, Low, or Needs Review.';
 
 
--- ── 3. reports ──────────────────────────────────────────
---  The radiologist's final report, edited from the AI draft.
---  The doctor is always the final decision-maker.
+-- ── 5. reports ───────────────────────────────────────────
+-- Final doctor report.
 
 CREATE TABLE IF NOT EXISTS reports (
-  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  study_id        UUID        NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  study_id        UUID NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
 
-  content         TEXT        NOT NULL,          -- final radiologist-authored text
-  authored_by     VARCHAR(128),                  -- doctor identifier (username or ID)
-  is_final        BOOLEAN     NOT NULL DEFAULT FALSE,
+  content         TEXT NOT NULL,
+  authored_by     VARCHAR(128),
+  is_final        BOOLEAN NOT NULL DEFAULT FALSE,
 
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE  reports           IS 'Final radiologist report. Always authored by a human.';
-COMMENT ON COLUMN reports.is_final  IS 'True when the doctor signs off. Locks the report.';
+COMMENT ON TABLE reports IS 'Final radiologist report authored by a human doctor.';
 
 
--- ── 4. feedback ─────────────────────────────────────────
---  Radiologist feedback on AI accuracy.
---  Useful for monitoring model performance over time.
+-- ── 6. feedback ──────────────────────────────────────────
+-- Doctor approve/reject feedback.
 
 CREATE TABLE IF NOT EXISTS feedback (
-  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  ai_result_id    UUID        NOT NULL REFERENCES ai_results(id) ON DELETE CASCADE,
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-  is_correct      BOOLEAN     NOT NULL,          -- did the AI get it right?
-  correct_label   VARCHAR(32),                   -- if wrong, what was the correct label?
-  notes           TEXT,                          -- free-text comment from the doctor
+  study_id        UUID NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
 
-  submitted_by    VARCHAR(128),
-  submitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  decision        VARCHAR(32) NOT NULL,
+  comment         TEXT DEFAULT '',
+
+  doctorId        UUID REFERENCES users(id) ON DELETE SET NULL,
+
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE  feedback              IS 'Doctor feedback on AI predictions. Used for quality monitoring.';
-COMMENT ON COLUMN feedback.is_correct   IS 'True if AI label matched radiologist conclusion.';
+COMMENT ON TABLE feedback IS 'Doctor feedback and decision for a study.';
 
 
--- ── Indexes ─────────────────────────────────────────────
---  Speed up the most common queries.
+-- ── Indexes ──────────────────────────────────────────────
 
-CREATE INDEX IF NOT EXISTS idx_studies_patient   ON studies    (patient_id);
-CREATE INDEX IF NOT EXISTS idx_studies_status    ON studies    (status);
-CREATE INDEX IF NOT EXISTS idx_ai_results_study  ON ai_results (study_id);
-CREATE INDEX IF NOT EXISTS idx_ai_results_prio   ON ai_results (priority);
-CREATE INDEX IF NOT EXISTS idx_reports_study     ON reports    (study_id);
-CREATE INDEX IF NOT EXISTS idx_feedback_result   ON feedback   (ai_result_id);
+CREATE INDEX IF NOT EXISTS idx_users_email        ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_role         ON users (role);
+
+CREATE INDEX IF NOT EXISTS idx_patients_phone     ON patients (phone_number);
+CREATE INDEX IF NOT EXISTS idx_patients_mrn       ON patients (medical_record_number);
+
+CREATE INDEX IF NOT EXISTS idx_studies_patient    ON studies (patient_id);
+CREATE INDEX IF NOT EXISTS idx_studies_status     ON studies (status);
+CREATE INDEX IF NOT EXISTS idx_studies_uploaded   ON studies (uploaded_at);
+
+CREATE INDEX IF NOT EXISTS idx_ai_results_study   ON ai_results (study_id);
+CREATE INDEX IF NOT EXISTS idx_ai_results_prio    ON ai_results (priority);
+
+CREATE INDEX IF NOT EXISTS idx_reports_study      ON reports (study_id);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_study     ON feedback (study_id);
 
 
--- ── Seed: one test study (optional, remove in production) ──
+-- ── Seed Data ────────────────────────────────────────────
+
+INSERT INTO users (full_name, email, password, phone_number, role)
+VALUES
+  ('Test Doctor', 'doctor@test.com', '123456', '00000000', 'doctor'),
+  ('Test Technician', 'technician@test.com', '123456', '00000001', 'technician')
+ON CONFLICT (email) DO NOTHING;
+
+INSERT INTO patient (
+  id,
+  full_name,
+  age,
+  gender,
+  phone_number,
+  medical_record_number
+)
+VALUES
+(
+  '00000000-0000-0000-0000-000000000001',
+  'Test Patient',
+  35,
+  'Unknown',
+  '00000002',
+  'MRN-0001'
+)
+ON CONFLICT DO NOTHING;
+
 INSERT INTO studies (patient_id, image_path, original_name, status)
-VALUES ('TEST-PATIENT-001', '/uploads/test_placeholder.png', 'chest_xray_sample.png', 'pending')
+VALUES
+(
+  '00000000-0000-0000-0000-000000000001',
+  '/uploads/test_placeholder.png',
+  'chest_xray_sample.png',
+  'pending'
+)
 ON CONFLICT DO NOTHING;

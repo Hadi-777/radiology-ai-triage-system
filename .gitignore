@@ -21,7 +21,8 @@ Thumbs.db
 # VS Code / IDE
 .vscode/
 .idea/
-
+apps/backend/uploads/*
+!apps/backend/uploads/.gitkeep
 # Python (AI service later)
 _pycache_/
 *.pyc

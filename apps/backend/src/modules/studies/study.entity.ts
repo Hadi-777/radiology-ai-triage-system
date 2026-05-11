@@ -1,32 +1,47 @@
 import {
+  Entity,
+  PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-  Entity,
+  ManyToOne,
   OneToMany,
-  PrimaryGeneratedColumn,
 } from 'typeorm';
-import { AiResult } from '../ai-service/ai-result.entity';
 
-@Entity('studies')
+import { Patient } from '../patients/patient.entity';
+import { User } from '../users/user.entity';
+import { AiResult } from '../ai-service/ai-result.entity';
+import { Feedback } from '../feedback/feedback.entity';
+
+@Entity()
 export class Study {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @Column()
-  patient_id: string;
+  patientId!: string;
 
   @Column()
-  image_path: string;
+  imagePath!: string;
 
   @Column()
-  original_name: string;
+  originalName!: string;
 
   @Column()
-  status: string;
+  status!: string;
 
   @CreateDateColumn()
-  uploaded_at: Date;
+  uploadedAt!: Date;
+
+  @ManyToOne(() => Patient)
+  patient!: Patient;
+
+  @ManyToOne(() => User)
+  uploadedBy!: User;
 
   @OneToMany(() => AiResult, (aiResult) => aiResult.study)
-  aiResults: AiResult[];
+  aiResults!: AiResult[];
+
+  @OneToMany(() => Feedback, (feedback) => feedback.study)
+  feedbacks!: Feedback[];
 }
+

@@ -9,7 +9,7 @@ async function bootstrap() {
   app.enableCors();
 
   app.useStaticAssets(join(process.cwd(), 'uploads'), {
-    prefix: '/uploads',
+    prefix: '/uploads/',
   });
 
   await app.listen(3000);

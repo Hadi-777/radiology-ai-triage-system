@@ -1,11 +1,20 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  PrimaryGeneratedColumn,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
+
+import { Study } from '../studies/study.entity';
 
 @Entity('feedback')
 export class Feedback {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column()
+  @Column({ nullable: true })
   study_id!: string;
 
   @Column()
@@ -16,5 +25,9 @@ export class Feedback {
 
   @CreateDateColumn()
   created_at!: Date;
+
+  @ManyToOne(() => Study, (study) => study.feedbacks, { nullable: true })
+  @JoinColumn({ name: 'study_id' })
+  study!: Study;
 }
 
